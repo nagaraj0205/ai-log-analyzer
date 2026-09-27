@@ -1,0 +1,33 @@
+name: ai-log-analyzer
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+      start_period: 20s
+
+  ai-log-analyzer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ai-log-analyzer:local
+    restart: unless-stopped
+    environment:
+      OLLAMA_URL: http://ollama:11434/api/generate
+      OLLAMA_MODEL: qwen2.5-coder:3b
+      MAX_LOG_LENGTH: "12000"
+    ports:
+      - "5001:5000"
+    depends_on:
+      ollama:
+        condition: service_healthy
+
+volumes:
+  ollama-data:

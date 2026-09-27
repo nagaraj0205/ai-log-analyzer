@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>AI Log Analyzer</title>
+
+    <link
+        rel="stylesheet"
+        href="{{ url_for('static', filename='style.css') }}"
+    >
+</head>
+
+<body>
+    <header class="header">
+        <h1>Agent | AI Log Analyzer</h1>
+
+        <p>
+            AI-assisted analysis for Jenkins, Docker, Kubernetes,
+            Linux and application logs
+        </p>
+    </header>
+
+    <main class="container">
+        <section class="panel input-panel">
+            <h2>Provide Log</h2>
+
+            <label for="log-type">Log Source</label>
+
+            <select id="log-type">
+                <option value="auto">Auto Detect</option>
+                <option value="jenkins">Jenkins</option>
+                <option value="docker">Docker</option>
+                <option value="kubernetes">Kubernetes</option>
+                <option value="linux">Linux / System</option>
+                <option value="application">Application</option>
+            </select>
+
+            <label for="log-text">Log Content</label>
+
+            <textarea
+                id="log-text"
+                placeholder="Paste the log content here..."
+                maxlength="200000"
+            ></textarea>
+
+            <div class="input-actions">
+                <button id="sample-button" class="secondary-button">
+                    Load Sample Log
+                </button>
+
+                <button id="clear-button" class="secondary-button">
+                    Clear
+                </button>
+            </div>
+
+            <button id="analyze-button" class="primary-button">
+                Analyze Log
+            </button>
+
+            <p id="operation-message"></p>
+        </section>
+
+        <section class="panel result-panel">
+            <div class="result-heading">
+                <h2>AI Analysis</h2>
+
+                <button
+                    id="download-button"
+                    class="download-button"
+                    disabled
+                >
+                    Download Report
+                </button>
+            </div>
+
+            <div id="source-information" class="source-information">
+                <span id="source-badge" class="source-badge">
+                    No log analyzed
+                </span>
+
+                <span id="model-information"></span>
+            </div>
+
+            <div class="statistics-grid">
+                <div class="statistic-card">
+                    <span class="statistic-label">Lines</span>
+                    <strong id="line-count">0</strong>
+                </div>
+
+                <div class="statistic-card error-card">
+                    <span class="statistic-label">Errors</span>
+                    <strong id="error-count">0</strong>
+                </div>
+
+                <div class="statistic-card warning-card">
+                    <span class="statistic-label">Warnings</span>
+                    <strong id="warning-count">0</strong>
+                </div>
+
+                <div class="statistic-card info-card">
+                    <span class="statistic-label">Info</span>
+                    <strong id="info-count">0</strong>
+                </div>
+            </div>
+
+            <pre id="analysis-result">Paste a log and select Analyze Log.</pre>
+        </section>
+    </main>
+
+    <footer>
+        <p>Agent | AI-powered DevOps log analysis</p>
+    </footer>
+
+    <script>
+        const logType = document.getElementById("log-type");
+        const logText = document.getElementById("log-text");
+        const analyzeButton =
+            document.getElementById("analyze-button");
+        const sampleButton =
+            document.getElementById("sample-button");
+        const clearButton =
+            document.getElementById("clear-button");
+        const downloadButton =
+            document.getElementById("download-button");
+
+        const operationMessage =
+            document.getElementById("operation-message");
+        const sourceBadge =
+            document.getElementById("source-badge");
+        const modelInformation =
+            document.getElementById("model-information");
+        const analysisResult =
+            document.getElementById("analysis-result");
+
+        const lineCount =
+            document.getElementById("line-count");
+        const errorCount =
+            document.getElementById("error-count");
+        const warningCount =
+            document.getElementById("warning-count");
+        const infoCount =
+            document.getElementById("info-count");
+
+        let latestReport = "";
+
+        const sampleLog = `[2026-09-18 10:15:01] INFO Starting payment-api
+[2026-09-18 10:15:03] INFO Connecting to database
+[2026-09-18 10:15:08] WARNING Database connection is slow
+[2026-09-18 10:15:12] ERROR Connection timeout after 30 seconds
+[2026-09-18 10:15:13] ERROR Failed to initialize database connection
+[2026-09-18 10:15:15] INFO Retrying database connection
+[2026-09-18 10:15:45] ERROR Connection timeout after 30 seconds
+[2026-09-18 10:15:46] ERROR Application startup failed`;
+
+        function resetResults() {
+            sourceBadge.textContent = "No log analyzed";
+            modelInformation.textContent = "";
+
+            lineCount.textContent = "0";
+            errorCount.textContent = "0";
+            warningCount.textContent = "0";
+            infoCount.textContent = "0";
+
+            analysisResult.textContent =
+                "Paste a log and select Analyze Log.";
+
+            downloadButton.disabled = true;
+            latestReport = "";
+        }
+
+        sampleButton.addEventListener("click", () => {
+            logType.value = "auto";
+            logText.value = sampleLog;
+            operationMessage.textContent =
+                "Sample application log loaded.";
+        });
+
+        clearButton.addEventListener("click", () => {
+            logText.value = "";
+            operationMessage.textContent = "";
+            resetResults();
+            logText.focus();
+        });
+
+        analyzeButton.addEventListener("click", async () => {
+            const submittedLog = logText.value.trim();
+
+            if (!submittedLog) {
+                operationMessage.textContent =
+                    "Please paste a log before starting the analysis.";
+
+                logText.focus();
+                return;
+            }
+
+            analyzeButton.disabled = true;
+            sampleButton.disabled = true;
+            clearButton.disabled = true;
+            downloadButton.disabled = true;
+
+            analyzeButton.textContent = "Analyzing...";
+            operationMessage.textContent =
+                "The local AI model is analyzing the log.";
+
+            analysisResult.textContent =
+                "Please wait while the analysis is generated...";
+
+            try {
+                const response = await fetch(
+                    "/api/analyze",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json"
+                        },
+                        body: JSON.stringify({
+                            log_type: logType.value,
+                            log_text: submittedLog
+                        })
+                    }
+                );
+
+                const result = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(
+                        result.error || "Unable to analyze the log."
+                    );
+                }
+
+                sourceBadge.textContent =
+                    `Detected: ${result.detected_source}`;
+
+                modelInformation.textContent =
+                    `Analyzed as: ${result.analyzed_as} | ` +
+                    `Model: ${result.model}`;
+
+                lineCount.textContent =
+                    result.statistics.total_lines;
+
+                errorCount.textContent =
+                    result.statistics.error_count;
+
+                warningCount.textContent =
+                    result.statistics.warning_count;
+
+                infoCount.textContent =
+                    result.statistics.info_count;
+
+                analysisResult.textContent = result.analysis;
+
+                latestReport =
+                    "AI LOG ANALYSIS REPORT\n" +
+                    "======================\n\n" +
+                    `Detected source: ${result.detected_source}\n` +
+                    `Analyzed as: ${result.analyzed_as}\n` +
+                    `Model: ${result.model}\n` +
+                    `Total lines: ${result.statistics.total_lines}\n` +
+                    `Errors: ${result.statistics.error_count}\n` +
+                    `Warnings: ${result.statistics.warning_count}\n` +
+                    `Info: ${result.statistics.info_count}\n\n` +
+                    result.analysis;
+
+                downloadButton.disabled = false;
+
+                operationMessage.textContent =
+                    "Log analysis completed successfully.";
+            } catch (error) {
+                resetResults();
+
+                analysisResult.textContent =
+                    `Error: ${error.message}`;
+
+                operationMessage.textContent =
+                    "Log analysis failed.";
+            } finally {
+                analyzeButton.disabled = false;
+                sampleButton.disabled = false;
+                clearButton.disabled = false;
+                analyzeButton.textContent = "Analyze Log";
+            }
+        });
+
+        downloadButton.addEventListener("click", () => {
+            if (!latestReport) {
+                return;
+            }
+
+            const reportBlob = new Blob(
+                [latestReport],
+                {
+                    type: "text/plain;charset=utf-8"
+                }
+            );
+
+            const reportUrl = URL.createObjectURL(reportBlob);
+            const downloadLink = document.createElement("a");
+
+            downloadLink.href = reportUrl;
+            downloadLink.download = "ai-log-analysis-report.txt";
+
+            document.body.appendChild(downloadLink);
+            downloadLink.click();
+            downloadLink.remove();
+
+            URL.revokeObjectURL(reportUrl);
+        });
+    </script>
+</body>
+</html>
