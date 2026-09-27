@@ -1,316 +1,1191 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
+
     <meta charset="UTF-8">
 
-    <meta
-        name="viewport"
-        content="width=device-width, initial-scale=1.0"
-    >
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
 
     <title>AI Log Analyzer</title>
 
-    <link
-        rel="stylesheet"
-        href="{{ url_for('static', filename='style.css') }}"
-    >
+    <style>
+
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            font-family:
+                Arial,
+                Helvetica,
+                sans-serif;
+            background: #0f172a;
+            color: #e2e8f0;
+        }
+
+        header {
+            padding: 25px 40px;
+            background: #111827;
+            border-bottom: 1px solid #334155;
+        }
+
+        header h1 {
+            margin: 0;
+            font-size: 28px;
+        }
+
+        header p {
+            margin-top: 8px;
+            color: #94a3b8;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: auto;
+            padding: 30px;
+        }
+
+        .toolbar {
+            display: flex;
+            gap: 15px;
+            align-items: center;
+            margin-bottom: 25px;
+        }
+
+        select {
+            background: #1e293b;
+            color: white;
+            border: 1px solid #475569;
+            border-radius: 8px;
+            padding: 12px 16px;
+            font-size: 15px;
+            min-width: 250px;
+        }
+
+        button {
+            border: 0;
+            border-radius: 7px;
+            padding: 10px 15px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .primary {
+            background: #2563eb;
+            color: white;
+        }
+
+        .secondary {
+            background: #475569;
+            color: white;
+        }
+
+        .success {
+            background: #16a34a;
+            color: white;
+        }
+
+        .danger {
+            background: #dc2626;
+            color: white;
+        }
+
+        button:hover {
+            opacity: 0.85;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns:
+                repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+
+        .card {
+            background: #1e293b;
+            border: 1px solid #334155;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow:
+                0 5px 20px rgba(0,0,0,0.2);
+        }
+
+        .card h3 {
+            margin-top: 0;
+            color: #f8fafc;
+        }
+
+        .meta {
+            margin: 8px 0;
+            color: #94a3b8;
+            font-size: 14px;
+        }
+
+        .status {
+            display: inline-block;
+            padding: 5px 9px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-bottom: 10px;
+        }
+
+        .status-success {
+            background: #14532d;
+            color: #86efac;
+        }
+
+        .status-failure {
+            background: #7f1d1d;
+            color: #fca5a5;
+        }
+
+        .status-running {
+            background: #78350f;
+            color: #fde68a;
+        }
+
+        .status-neutral {
+            background: #334155;
+            color: #cbd5e1;
+        }
+
+        .actions {
+            display: flex;
+            gap: 8px;
+            margin-top: 15px;
+            flex-wrap: wrap;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            color: #94a3b8;
+        }
+
+        .error {
+            background: #450a0a;
+            border: 1px solid #991b1b;
+            color: #fecaca;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+
+        pre {
+            background: #020617;
+            color: #cbd5e1;
+            padding: 20px;
+            border-radius: 8px;
+            overflow: auto;
+            max-height: 650px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            line-height: 1.5;
+        }
+
+        .empty {
+            text-align: center;
+            padding: 50px;
+            color: #64748b;
+        }
+
+        .back {
+            margin-bottom: 20px;
+        }
+
+    </style>
+
 </head>
 
 <body>
-    <header class="header">
-        <h1>Agent | AI Log Analyzer</h1>
 
-        <p>
-            AI-assisted analysis for Jenkins, Docker, Kubernetes,
-            Linux and application logs
-        </p>
-    </header>
+<header>
 
-    <main class="container">
-        <section class="panel input-panel">
-            <h2>Provide Log</h2>
+    <h1>AI Log Analyzer</h1>
 
-            <label for="log-type">Log Source</label>
+    <p>
+        Analyze Docker, Jenkins, Argo CD,
+        GitHub Actions, Kubernetes, Ansible
+        and Linux logs using AI.
+    </p>
 
-            <select id="log-type">
-                <option value="auto">Auto Detect</option>
-                <option value="jenkins">Jenkins</option>
-                <option value="docker">Docker</option>
-                <option value="kubernetes">Kubernetes</option>
-                <option value="linux">Linux / System</option>
-                <option value="application">Application</option>
-            </select>
+</header>
 
-            <label for="log-text">Log Content</label>
 
-            <textarea
-                id="log-text"
-                placeholder="Paste the log content here..."
-                maxlength="200000"
-            ></textarea>
+<div class="container">
 
-            <div class="input-actions">
-                <button id="sample-button" class="secondary-button">
-                    Load Sample Log
-                </button>
+    <div class="toolbar">
 
-                <button id="clear-button" class="secondary-button">
-                    Clear
-                </button>
-            </div>
+        <select id="sourceSelect"
+                onchange="loadSource()">
 
-            <button id="analyze-button" class="primary-button">
-                Analyze Log
-            </button>
+            <option value="docker">
+                Docker Containers
+            </option>
 
-            <p id="operation-message"></p>
-        </section>
+            <option value="jenkins">
+                Jenkins Builds
+            </option>
 
-        <section class="panel result-panel">
-            <div class="result-heading">
-                <h2>AI Analysis</h2>
+            <option value="argocd">
+                Argo CD
+            </option>
 
-                <button
-                    id="download-button"
-                    class="download-button"
-                    disabled
-                >
-                    Download Report
-                </button>
-            </div>
+            <option value="github">
+                GitHub Actions
+            </option>
 
-            <div id="source-information" class="source-information">
-                <span id="source-badge" class="source-badge">
-                    No log analyzed
-                </span>
+        </select>
 
-                <span id="model-information"></span>
-            </div>
+        <button class="secondary"
+                onclick="loadSource()">
+            Refresh
+        </button>
 
-            <div class="statistics-grid">
-                <div class="statistic-card">
-                    <span class="statistic-label">Lines</span>
-                    <strong id="line-count">0</strong>
-                </div>
+    </div>
 
-                <div class="statistic-card error-card">
-                    <span class="statistic-label">Errors</span>
-                    <strong id="error-count">0</strong>
-                </div>
 
-                <div class="statistic-card warning-card">
-                    <span class="statistic-label">Warnings</span>
-                    <strong id="warning-count">0</strong>
-                </div>
+    <div id="error"></div>
 
-                <div class="statistic-card info-card">
-                    <span class="statistic-label">Info</span>
-                    <strong id="info-count">0</strong>
-                </div>
-            </div>
+    <div id="content">
 
-            <pre id="analysis-result">Paste a log and select Analyze Log.</pre>
-        </section>
-    </main>
+        <div class="loading">
+            Loading...
+        </div>
 
-    <footer>
-        <p>Agent | AI-powered DevOps log analysis</p>
-    </footer>
+    </div>
 
-    <script>
-        const logType = document.getElementById("log-type");
-        const logText = document.getElementById("log-text");
-        const analyzeButton =
-            document.getElementById("analyze-button");
-        const sampleButton =
-            document.getElementById("sample-button");
-        const clearButton =
-            document.getElementById("clear-button");
-        const downloadButton =
-            document.getElementById("download-button");
+</div>
 
-        const operationMessage =
-            document.getElementById("operation-message");
-        const sourceBadge =
-            document.getElementById("source-badge");
-        const modelInformation =
-            document.getElementById("model-information");
-        const analysisResult =
-            document.getElementById("analysis-result");
 
-        const lineCount =
-            document.getElementById("line-count");
-        const errorCount =
-            document.getElementById("error-count");
-        const warningCount =
-            document.getElementById("warning-count");
-        const infoCount =
-            document.getElementById("info-count");
+<script>
 
-        let latestReport = "";
+const content =
+    document.getElementById("content");
 
-        const sampleLog = `[2026-09-18 10:15:01] INFO Starting payment-api
-[2026-09-18 10:15:03] INFO Connecting to database
-[2026-09-18 10:15:08] WARNING Database connection is slow
-[2026-09-18 10:15:12] ERROR Connection timeout after 30 seconds
-[2026-09-18 10:15:13] ERROR Failed to initialize database connection
-[2026-09-18 10:15:15] INFO Retrying database connection
-[2026-09-18 10:15:45] ERROR Connection timeout after 30 seconds
-[2026-09-18 10:15:46] ERROR Application startup failed`;
+const errorBox =
+    document.getElementById("error");
 
-        function resetResults() {
-            sourceBadge.textContent = "No log analyzed";
-            modelInformation.textContent = "";
 
-            lineCount.textContent = "0";
-            errorCount.textContent = "0";
-            warningCount.textContent = "0";
-            infoCount.textContent = "0";
+function escapeHtml(value) {
 
-            analysisResult.textContent =
-                "Paste a log and select Analyze Log.";
+    if (value === null ||
+        value === undefined) {
 
-            downloadButton.disabled = true;
-            latestReport = "";
-        }
+        return "";
 
-        sampleButton.addEventListener("click", () => {
-            logType.value = "auto";
-            logText.value = sampleLog;
-            operationMessage.textContent =
-                "Sample application log loaded.";
-        });
+    }
 
-        clearButton.addEventListener("click", () => {
-            logText.value = "";
-            operationMessage.textContent = "";
-            resetResults();
-            logText.focus();
-        });
+    return String(value)
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+}
 
-        analyzeButton.addEventListener("click", async () => {
-            const submittedLog = logText.value.trim();
 
-            if (!submittedLog) {
-                operationMessage.textContent =
-                    "Please paste a log before starting the analysis.";
+function clearError() {
 
-                logText.focus();
-                return;
-            }
+    errorBox.innerHTML = "";
 
-            analyzeButton.disabled = true;
-            sampleButton.disabled = true;
-            clearButton.disabled = true;
-            downloadButton.disabled = true;
+}
 
-            analyzeButton.textContent = "Analyzing...";
-            operationMessage.textContent =
-                "The local AI model is analyzing the log.";
 
-            analysisResult.textContent =
-                "Please wait while the analysis is generated...";
+function showError(message) {
 
-            try {
-                const response = await fetch(
-                    "/api/analyze",
-                    {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json"
-                        },
-                        body: JSON.stringify({
-                            log_type: logType.value,
-                            log_text: submittedLog
-                        })
-                    }
-                );
+    errorBox.innerHTML = `
+        <div class="error">
+            ${escapeHtml(message)}
+        </div>
+    `;
 
-                const result = await response.json();
+}
 
-                if (!response.ok) {
-                    throw new Error(
-                        result.error || "Unable to analyze the log."
-                    );
-                }
 
-                sourceBadge.textContent =
-                    `Detected: ${result.detected_source}`;
+async function loadSource() {
 
-                modelInformation.textContent =
-                    `Analyzed as: ${result.analyzed_as} | ` +
-                    `Model: ${result.model}`;
+    clearError();
 
-                lineCount.textContent =
-                    result.statistics.total_lines;
+    const source =
+        document.getElementById(
+            "sourceSelect"
+        ).value;
 
-                errorCount.textContent =
-                    result.statistics.error_count;
+    if (source === "docker") {
 
-                warningCount.textContent =
-                    result.statistics.warning_count;
+        await loadDocker();
 
-                infoCount.textContent =
-                    result.statistics.info_count;
+    }
 
-                analysisResult.textContent = result.analysis;
+    else if (source === "jenkins") {
 
-                latestReport =
-                    "AI LOG ANALYSIS REPORT\n" +
-                    "======================\n\n" +
-                    `Detected source: ${result.detected_source}\n` +
-                    `Analyzed as: ${result.analyzed_as}\n` +
-                    `Model: ${result.model}\n` +
-                    `Total lines: ${result.statistics.total_lines}\n` +
-                    `Errors: ${result.statistics.error_count}\n` +
-                    `Warnings: ${result.statistics.warning_count}\n` +
-                    `Info: ${result.statistics.info_count}\n\n` +
-                    result.analysis;
+        await loadJenkins();
 
-                downloadButton.disabled = false;
+    }
 
-                operationMessage.textContent =
-                    "Log analysis completed successfully.";
-            } catch (error) {
-                resetResults();
+    else if (source === "argocd") {
 
-                analysisResult.textContent =
-                    `Error: ${error.message}`;
+        await loadArgoCD();
 
-                operationMessage.textContent =
-                    "Log analysis failed.";
-            } finally {
-                analyzeButton.disabled = false;
-                sampleButton.disabled = false;
-                clearButton.disabled = false;
-                analyzeButton.textContent = "Analyze Log";
-            }
-        });
+    }
 
-        downloadButton.addEventListener("click", () => {
-            if (!latestReport) {
-                return;
-            }
+    else if (source === "github") {
 
-            const reportBlob = new Blob(
-                [latestReport],
-                {
-                    type: "text/plain;charset=utf-8"
-                }
+        await loadGitHub();
+
+    }
+
+}
+
+
+/* =========================================================
+   DOCKER
+========================================================= */
+
+async function loadDocker() {
+
+    content.innerHTML = `
+        <div class="loading">
+            Loading Docker containers...
+        </div>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/containers"
             );
 
-            const reportUrl = URL.createObjectURL(reportBlob);
-            const downloadLink = document.createElement("a");
+        const data =
+            await response.json();
 
-            downloadLink.href = reportUrl;
-            downloadLink.download = "ai-log-analysis-report.txt";
+        if (!response.ok) {
 
-            document.body.appendChild(downloadLink);
-            downloadLink.click();
-            downloadLink.remove();
+            throw new Error(
+                data.error ||
+                "Unable to load containers"
+            );
 
-            URL.revokeObjectURL(reportUrl);
-        });
-    </script>
+        }
+
+        if (!data.length) {
+
+            content.innerHTML = `
+                <div class="empty">
+                    No Docker containers found.
+                </div>
+            `;
+
+            return;
+        }
+
+        content.innerHTML = `
+            <div class="grid">
+
+                ${data.map(container => `
+
+                    <div class="card">
+
+                        <h3>
+                            ${escapeHtml(
+                                container.name
+                            )}
+                        </h3>
+
+                        <div class="meta">
+                            Image:
+                            ${escapeHtml(
+                                container.image
+                            )}
+                        </div>
+
+                        <div class="meta">
+                            Status:
+                            ${escapeHtml(
+                                container.status
+                            )}
+                        </div>
+
+                        <div class="actions">
+
+                            <button
+                                class="secondary"
+                                onclick="viewDockerLogs(
+                                    '${container.id}'
+                                )">
+                                View Logs
+                            </button>
+
+                            <button
+                                class="primary"
+                                onclick="analyzeDocker(
+                                    '${container.id}'
+                                )">
+                                Analyze
+                            </button>
+
+                        </div>
+
+                    </div>
+
+                `).join("")}
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+async function viewDockerLogs(id) {
+
+    content.innerHTML = `
+        <div class="loading">
+            Loading Docker logs...
+        </div>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/containers/${id}/logs`
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error
+            );
+
+        }
+
+        content.innerHTML = `
+
+            <button
+                class="secondary back"
+                onclick="loadSource()">
+                ← Back
+            </button>
+
+            <div class="card">
+
+                <h2>
+                    Docker Logs
+                </h2>
+
+                <pre>${escapeHtml(
+                    data.logs
+                )}</pre>
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+function analyzeDocker(id) {
+
+    window.location.href =
+        `/analyze?source=docker&container=${id}`;
+
+}
+
+
+/* =========================================================
+   JENKINS
+========================================================= */
+
+async function loadJenkins() {
+
+    content.innerHTML = `
+        <div class="loading">
+            Loading Jenkins builds...
+        </div>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/jenkins/jobs"
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error
+            );
+
+        }
+
+        const jobs =
+            data.jobs || [];
+
+        if (!jobs.length) {
+
+            content.innerHTML = `
+                <div class="empty">
+                    No Jenkins jobs found.
+                </div>
+            `;
+
+            return;
+        }
+
+        content.innerHTML = `
+            <div class="grid">
+
+                ${jobs.map(job => {
+
+                    const build =
+                        job.lastBuild;
+
+                    return `
+
+                        <div class="card">
+
+                            <h3>
+                                ${escapeHtml(
+                                    job.name
+                                )}
+                            </h3>
+
+                            <div class="meta">
+                                Last Build:
+                                ${
+                                    build
+                                    ? "#" +
+                                      build.number
+                                    : "N/A"
+                                }
+                            </div>
+
+                            <div class="meta">
+                                Result:
+                                ${
+                                    build
+                                    ? (
+                                        build.result
+                                        || "RUNNING"
+                                      )
+                                    : "N/A"
+                                }
+                            </div>
+
+                            ${
+                                build
+                                ? `
+                                    <div class="actions">
+
+                                        <button
+                                            class="secondary"
+                                            onclick="viewJenkinsLogs(
+                                                '${encodeURIComponent(
+                                                    job.name
+                                                )}',
+                                                ${build.number}
+                                            )">
+                                            Console Log
+                                        </button>
+
+                                        <button
+                                            class="primary"
+                                            onclick="analyzeJenkins(
+                                                '${encodeURIComponent(
+                                                    job.name
+                                                )}',
+                                                ${build.number}
+                                            )">
+                                            Analyze
+                                        </button>
+
+                                    </div>
+                                `
+                                : ""
+                            }
+
+                        </div>
+
+                    `;
+
+                }).join("")}
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+async function viewJenkinsLogs(
+    job,
+    build
+) {
+
+    content.innerHTML = `
+        <div class="loading">
+            Loading Jenkins console log...
+        </div>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/jenkins/jobs/${job}/builds/${build}/logs`
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error
+            );
+
+        }
+
+        content.innerHTML = `
+
+            <button
+                class="secondary back"
+                onclick="loadSource()">
+                ← Back
+            </button>
+
+            <div class="card">
+
+                <h2>
+                    Jenkins Build #${build}
+                </h2>
+
+                <pre>${escapeHtml(
+                    data.logs
+                )}</pre>
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+function analyzeJenkins(
+    job,
+    build
+) {
+
+    window.location.href =
+        `/analyze?source=jenkins` +
+        `&job=${job}` +
+        `&build=${build}`;
+
+}
+
+
+/* =========================================================
+   ARGO CD
+========================================================= */
+
+async function loadArgoCD() {
+
+    content.innerHTML = `
+        <div class="loading">
+            Loading Argo CD applications...
+        </div>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/argocd/applications"
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error
+            );
+
+        }
+
+        const applications =
+            data.items || [];
+
+        if (!applications.length) {
+
+            content.innerHTML = `
+                <div class="empty">
+                    No Argo CD applications found.
+                </div>
+            `;
+
+            return;
+        }
+
+        content.innerHTML = `
+            <div class="grid">
+
+                ${applications.map(app => {
+
+                    const status =
+                        app.status || {};
+
+                    const sync =
+                        status.sync || {};
+
+                    const health =
+                        status.health || {};
+
+                    return `
+
+                        <div class="card">
+
+                            <h3>
+                                ${escapeHtml(
+                                    app.metadata?.name
+                                    || "Unknown"
+                                )}
+                            </h3>
+
+                            <div class="meta">
+                                Sync:
+                                ${escapeHtml(
+                                    sync.status
+                                    || "Unknown"
+                                )}
+                            </div>
+
+                            <div class="meta">
+                                Health:
+                                ${escapeHtml(
+                                    health.status
+                                    || "Unknown"
+                                )}
+                            </div>
+
+                            <div class="meta">
+                                Project:
+                                ${escapeHtml(
+                                    app.spec?.project
+                                    || "Unknown"
+                                )}
+                            </div>
+
+                            <div class="meta">
+                                Revision:
+                                ${escapeHtml(
+                                    status
+                                    .operationState
+                                    ?.syncResult
+                                    ?.revision
+                                    || status
+                                    .sync
+                                    ?.revision
+                                    || "Unknown"
+                                )}
+                            </div>
+
+                            <div class="actions">
+
+                                <button
+                                    class="primary"
+                                    onclick="analyzeArgoCD(
+                                        '${encodeURIComponent(
+                                            app.metadata?.name
+                                        )}'
+                                    )">
+                                    Analyze
+                                </button>
+
+                            </div>
+
+                        </div>
+
+                    `;
+
+                }).join("")}
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+function analyzeArgoCD(name) {
+
+    window.location.href =
+        `/analyze?source=argocd&app=${name}`;
+
+}
+
+
+/* =========================================================
+   GITHUB ACTIONS
+========================================================= */
+
+async function loadGitHub() {
+
+    content.innerHTML = `
+        <div class="loading">
+            Loading GitHub Actions runs...
+        </div>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/github/runs"
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error
+            );
+
+        }
+
+        const runs =
+            data.workflow_runs || [];
+
+        if (!runs.length) {
+
+            content.innerHTML = `
+                <div class="empty">
+                    No GitHub Actions workflow runs found.
+                </div>
+            `;
+
+            return;
+        }
+
+        content.innerHTML = `
+            <div class="grid">
+
+                ${runs.map(run => {
+
+                    const conclusion =
+                        run.conclusion;
+
+                    let statusClass =
+                        "status-neutral";
+
+                    if (
+                        conclusion ===
+                        "success"
+                    ) {
+
+                        statusClass =
+                            "status-success";
+
+                    }
+
+                    else if (
+                        conclusion ===
+                        "failure"
+                    ) {
+
+                        statusClass =
+                            "status-failure";
+
+                    }
+
+                    else if (
+                        run.status ===
+                        "in_progress"
+                    ) {
+
+                        statusClass =
+                            "status-running";
+
+                    }
+
+                    return `
+
+                        <div class="card">
+
+                            <h3>
+                                ${escapeHtml(
+                                    run.name
+                                    || run.workflow_name
+                                )}
+                            </h3>
+
+                            <div class="
+                                status
+                                ${statusClass}
+                            ">
+
+                                ${escapeHtml(
+                                    conclusion
+                                    || run.status
+                                    || "unknown"
+                                )}
+
+                            </div>
+
+                            <div class="meta">
+                                Run:
+                                #${run.run_number}
+                            </div>
+
+                            <div class="meta">
+                                Branch:
+                                ${escapeHtml(
+                                    run.head_branch
+                                )}
+                            </div>
+
+                            <div class="meta">
+                                Commit:
+                                ${escapeHtml(
+                                    run.head_sha
+                                    ?.substring(0, 7)
+                                )}
+                            </div>
+
+                            <div class="meta">
+                                Event:
+                                ${escapeHtml(
+                                    run.event
+                                )}
+                            </div>
+
+                            <div class="actions">
+
+                                <button
+                                    class="secondary"
+                                    onclick="viewGitHubLogs(
+                                        ${run.id},
+                                        '${escapeHtml(
+                                            run.name
+                                            || run.workflow_name
+                                        )}'
+                                    )">
+                                    View Logs
+                                </button>
+
+                                <button
+                                    class="primary"
+                                    onclick="analyzeGitHub(
+                                        ${run.id}
+                                    )">
+                                    Analyze
+                                </button>
+
+                            </div>
+
+                        </div>
+
+                    `;
+
+                }).join("")}
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+/* =========================================================
+   VIEW GITHUB LOGS
+========================================================= */
+
+async function viewGitHubLogs(
+    runId,
+    runName
+) {
+
+    content.innerHTML = `
+        <div class="loading">
+            Downloading GitHub Actions logs...
+        </div>
+    `;
+
+    clearError();
+
+    try {
+
+        const response =
+            await fetch(
+                `/api/github/runs/${runId}/logs`
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                "Unable to retrieve GitHub logs"
+            );
+
+        }
+
+        content.innerHTML = `
+
+            <button
+                class="secondary back"
+                onclick="loadSource()">
+                ← Back
+            </button>
+
+            <div class="card">
+
+                <h2>
+                    ${escapeHtml(runName)}
+                    - Run #${runId}
+                </h2>
+
+                <div class="actions">
+
+                    <button
+                        class="primary"
+                        onclick="analyzeGitHub(
+                            ${runId}
+                        )">
+                        Analyze Logs
+                    </button>
+
+                </div>
+
+                <br>
+
+                <pre>${escapeHtml(
+                    data.logs
+                )}</pre>
+
+            </div>
+        `;
+
+    }
+
+    catch (error) {
+
+        showError(
+            error.message
+        );
+
+        content.innerHTML = "";
+
+    }
+
+}
+
+
+/* =========================================================
+   ANALYZE GITHUB RUN
+========================================================= */
+
+function analyzeGitHub(runId) {
+
+    window.location.href =
+        `/analyze?source=github-actions` +
+        `&run=${runId}`;
+
+}
+
+
+/* =========================================================
+   INITIAL LOAD
+========================================================= */
+
+loadSource();
+
+</script>
+
 </body>
 </html>
