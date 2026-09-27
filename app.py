@@ -1,39 +1,28 @@
+import io
+import json
+import logging
 import os
 import re
-import io
+import time
 import zipfile
-import logging
+from collections import Counter
 
-import docker
 import requests
-
 from flask import Flask, jsonify, render_template, request
-
-
-# ============================================================
-# Flask
-# ============================================================
 
 app = Flask(__name__)
 
-app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
-
-
-# ============================================================
-# Logging
-# ============================================================
-
 logging.basicConfig(
-    level=logging.INFO,
+    level=os.getenv("LOG_LEVEL", "INFO"),
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
 logger = logging.getLogger(__name__)
 
 
-# ============================================================
-# Environment Variables
-# ============================================================
+# =========================
+# CONFIGURATION
+# =========================
 
 OLLAMA_URL = os.getenv(
     "OLLAMA_URL",
@@ -45,12 +34,38 @@ OLLAMA_MODEL = os.getenv(
     "qwen2.5-coder:3b"
 )
 
+OLLAMA_TEMPERATURE = float(
+    os.getenv("OLLAMA_TEMPERATURE", "0.2")
+)
+
+OLLAMA_NUM_PREDICT = int(
+    os.getenv("OLLAMA_NUM_PREDICT", "150")
+)
+
+OLLAMA_TIMEOUT = int(
+    os.getenv("OLLAMA_TIMEOUT", "120")
+)
+
 MAX_LOG_LENGTH = int(
-    os.getenv("MAX_LOG_LENGTH", "12000")
+    os.getenv("MAX_LOG_LENGTH", "6000")
+)
+
+MAX_LOG_LINES = int(
+    os.getenv("MAX_LOG_LINES", "80")
+)
+
+CONTEXT_LINES = int(
+    os.getenv("CONTEXT_LINES", "2")
+)
+
+MAX_ERROR_GROUPS = int(
+    os.getenv("MAX_ERROR_GROUPS", "25")
 )
 
 
-# Jenkins
+# =========================
+# JENKINS CONFIGURATION
+# =========================
 
 JENKINS_URL = os.getenv(
     "JENKINS_URL",
@@ -64,11 +79,13 @@ JENKINS_USER = os.getenv(
 
 JENKINS_TOKEN = os.getenv(
     "JENKINS_TOKEN",
-    "" 
+    ""
 )
 
 
-# Argo CD
+# =========================
+# ARGO CD CONFIGURATION
+# =========================
 
 ARGOCD_URL = os.getenv(
     "ARGOCD_URL",
@@ -77,926 +94,1120 @@ ARGOCD_URL = os.getenv(
 
 ARGOCD_TOKEN = os.getenv(
     "ARGOCD_TOKEN",
-    "" 
+    ""
 )
 
 
-# GitHub
+# =========================
+# GITHUB CONFIGURATION
+# =========================
+
+GITHUB_API = os.getenv(
+    "GITHUB_API_URL",
+    "https://api.github.com"
+).rstrip("/")
 
 GITHUB_TOKEN = os.getenv(
     "GITHUB_TOKEN",
     ""
 )
 
-GITHUB_REPO = os.getenv(
-    "GITHUB_REPO",
-    ""
-)
+# GITHUB_REPO is commonly set as a single "owner/repo" string
+# (that's the format used in .env / .env.example). Support that,
+# but still allow GITHUB_OWNER / GITHUB_REPO to be set separately
+# if someone prefers that instead.
+_github_owner_env = os.getenv("GITHUB_OWNER", "")
+_github_repo_env = os.getenv("GITHUB_REPO", "")
 
-GITHUB_API_URL = os.getenv(
-    "GITHUB_API_URL",
-    "https://api.github.com"
-).rstrip("/")
-
-
-# ============================================================
-# Docker Client
-# ============================================================
-
-try:
-
-    docker_client = docker.from_env()
-
-    docker_client.ping()
-
-    logger.info(
-        "Docker client connected successfully"
-    )
-
-except Exception as e:
-
-    docker_client = None
-
-    logger.warning(
-        "Docker client unavailable: %s",
-        e
-    )
+if _github_owner_env:
+    GITHUB_OWNER = _github_owner_env
+    GITHUB_REPO = _github_repo_env
+elif "/" in _github_repo_env:
+    GITHUB_OWNER, GITHUB_REPO = _github_repo_env.split("/", 1)
+else:
+    GITHUB_OWNER = ""
+    GITHUB_REPO = _github_repo_env
 
 
-# ============================================================
-# Supported Log Types
-# ============================================================
+# =========================
+# GENERAL HELPERS
+# =========================
 
-SUPPORTED_LOG_TYPES = [
-    "auto",
-    "docker",
-    "kubernetes",
-    "jenkins",
-    "linux",
-    "application",
-    "ansible",
-    "argocd",
-    "github-actions"
+def mask_sensitive_data(text):
+    if not text:
+        return ""
+
+    patterns = [
+        (
+            r"\bAKIA[0-9A-Z]{16}\b",
+            "AKIA****************"
+        ),
+        (
+            r"(?i)(aws_access_key_id\s*[=:]\s*)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)(aws_secret_access_key\s*[=:]\s*)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)(password\s*[=:]\s*)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)(passwd\s*[=:]\s*)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)(token\s*[=:]\s*)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)(access_token\s*[=:]\s*)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)(authorization\s*:\s*bearer\s+)[^\s]+",
+            r"\1********"
+        ),
+        (
+            r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]+",
+            "Bearer ********"
+        ),
+        (
+            r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b",
+            "gh********"
+        ),
+        (
+            r"-----BEGIN [A-Z ]+ PRIVATE KEY-----.*?"
+            r"-----END [A-Z ]+ PRIVATE KEY-----",
+            "-----PRIVATE KEY REDACTED-----"
+        ),
+    ]
+
+    result = text
+
+    for pattern, replacement in patterns:
+        result = re.sub(
+            pattern,
+            replacement,
+            result,
+            flags=re.MULTILINE | re.DOTALL
+        )
+
+    return result
+
+
+def get_log_statistics(logs):
+    lines = logs.splitlines()
+
+    error_count = 0
+    warning_count = 0
+    info_count = 0
+
+    for line in lines:
+        lower = line.lower()
+
+        if any(
+            x in lower
+            for x in [
+                "error",
+                "fatal",
+                "exception",
+                "failed",
+                "failure",
+                "crashloopbackoff",
+                "imagepullbackoff",
+                "oomkilled"
+            ]
+        ):
+            error_count += 1
+
+        elif any(
+            x in lower
+            for x in [
+                "warn",
+                "warning"
+            ]
+        ):
+            warning_count += 1
+
+        elif "info" in lower:
+            info_count += 1
+
+    return {
+        "total_lines": len(lines),
+        "error_lines": error_count,
+        "warning_lines": warning_count,
+        "info_lines": info_count,
+        "total_characters": len(logs)
+    }
+
+
+def get_repeated_errors(logs):
+    patterns = [
+        "error",
+        "exception",
+        "failed",
+        "failure",
+        "fatal",
+        "timeout",
+        "oomkilled",
+        "crashloopbackoff",
+        "imagepullbackoff",
+        "unhealthy",
+        "connection refused",
+        "permission denied",
+        "access denied",
+        "unauthorized",
+        "forbidden",
+        "500",
+        "502",
+        "503",
+        "504"
+    ]
+
+    matches = []
+
+    for line in logs.splitlines():
+        line = line.strip()
+
+        if not line:
+            continue
+
+        lower = line.lower()
+
+        if any(
+            pattern in lower
+            for pattern in patterns
+        ):
+            normalized = re.sub(
+                r"\b\d+\b",
+                "<N>",
+                line
+            )
+
+            normalized = re.sub(
+                r"\s+",
+                " ",
+                normalized
+            )
+
+            matches.append(
+                normalized[:300]
+            )
+
+    counter = Counter(matches)
+
+    result = []
+
+    for message, count in counter.most_common(
+        MAX_ERROR_GROUPS
+    ):
+        result.append(
+            {
+                "message": message,
+                "count": count
+            }
+        )
+
+    return result
+
+
+IMPORTANT_PATTERNS = [
+    "error",
+    "fatal",
+    "exception",
+    "failed",
+    "failure",
+    "warn",
+    "warning",
+    "timeout",
+    "oomkilled",
+    "crashloopbackoff",
+    "imagepullbackoff",
+    "unhealthy",
+    "connection refused",
+    "permission denied",
+    "access denied",
+    "unauthorized",
+    "forbidden",
+    "not found",
+    "500",
+    "501",
+    "502",
+    "503",
+    "504"
 ]
 
 
-# ============================================================
-# Sensitive Data Masking
-# ============================================================
+def is_important_line(line):
+    lower = line.lower()
 
-def mask_sensitive_data(text):
-
-    if not text:
-        return text
-
-    patterns = [
-
-        (
-            r'(?i)(password\s*[=:]\s*)[^\s]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(passwd\s*[=:]\s*)[^\s]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(token\s*[=:]\s*)[^\s]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(api[_-]?key\s*[=:]\s*)[^\s]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(secret\s*[=:]\s*)[^\s]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(authorization:\s*bearer\s+)[^\s]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(aws_access_key_id\s*[=:]\s*)[A-Z0-9]+',
-            r'\1[MASKED]'
-        ),
-
-        (
-            r'(?i)(aws_secret_access_key\s*[=:]\s*)[^\s]+',
-            r'\1[MASKED]'
-        )
-    ]
-
-    for pattern, replacement in patterns:
-
-        text = re.sub(
-            pattern,
-            replacement,
-            text
-        )
-
-    return text
+    return any(
+        pattern in lower
+        for pattern in IMPORTANT_PATTERNS
+    )
 
 
-# ============================================================
-# Automatic Log Source Detection
-# ============================================================
-
-def detect_log_source(logs):
-
+def reduce_logs(logs):
     if not logs:
-        return "unknown"
-
-    text = logs.lower()
-
-    if (
-        "play [" in text
-        or "task [" in text
-        or "play recap" in text
-        or "ansible-playbook" in text
-        or "unreachable!" in text
-        or "fatal: [" in text
-    ):
-        return "ansible"
-
-    if (
-        "github actions" in text
-        or "runner version:" in text
-        or "##[error]" in text
-        or "##[command]" in text
-    ):
-        return "github-actions"
-
-    if (
-        "argocd" in text
-        or "argocd-server" in text
-        or "sync status" in text
-    ):
-        return "argocd"
-
-    if (
-        "jenkins" in text
-        or "[pipeline]" in text
-        or "hudson." in text
-        or "started by user" in text
-    ):
-        return "jenkins"
-
-    if (
-        "crashloopbackoff" in text
-        or "kubectl" in text
-        or "pod/" in text
-        or "containercreating" in text
-        or "imagepullbackoff" in text
-    ):
-        return "kubernetes"
-
-    if (
-        "docker" in text
-        or "containerd" in text
-        or "docker daemon" in text
-    ):
-        return "docker"
-
-    if (
-        "systemd" in text
-        or "kernel:" in text
-        or "journalctl" in text
-    ):
-        return "linux"
-
-    return "application"
-
-
-# ============================================================
-# Statistics
-# ============================================================
-
-def get_statistics(logs):
+        return ""
 
     lines = logs.splitlines()
 
-    error_count = len(
-        re.findall(
-            r"(?i)\b(error|err|failed|failure|fatal)\b",
-            logs
+    if (
+        len(lines) <= MAX_LOG_LINES
+        and len(logs) <= MAX_LOG_LENGTH
+    ):
+        return logs
+
+    selected_indexes = set()
+
+    for index, line in enumerate(lines):
+        if is_important_line(line):
+            start = max(
+                0,
+                index - CONTEXT_LINES
+            )
+
+            end = min(
+                len(lines),
+                index + CONTEXT_LINES + 1
+            )
+
+            for i in range(start, end):
+                selected_indexes.add(i)
+
+    if not selected_indexes:
+        start = max(
+            0,
+            len(lines) - MAX_LOG_LINES
         )
-    )
 
-    warning_count = len(
-        re.findall(
-            r"(?i)\b(warn|warning)\b",
-            logs
+        selected_indexes.update(
+            range(start, len(lines))
         )
-    )
 
-    critical_count = len(
-        re.findall(
-            r"(?i)\b(critical|panic|oom|out of memory)\b",
-            logs
-        )
-    )
-
-    return {
-        "lines": len(lines),
-        "characters": len(logs),
-        "errors": error_count,
-        "warnings": warning_count,
-        "critical": critical_count
-    }
-
-
-# ============================================================
-# Repeated Errors
-# ============================================================
-
-def find_repeated_errors(logs):
-
-    counter = {}
-
-    for line in logs.splitlines():
-
-        if re.search(
-            r"(?i)(error|failed|failure|fatal|exception)",
-            line
-        ):
-
-            cleaned = line.strip()
-
-            if cleaned:
-
-                counter[cleaned] = (
-                    counter.get(cleaned, 0) + 1
-                )
-
-    repeated = sorted(
-        counter.items(),
-        key=lambda x: x[1],
-        reverse=True
-    )
-
-    return repeated[:10]
-
-
-# ============================================================
-# Safety Check
-# ============================================================
-
-def safety_check(logs):
-
-    blocked_patterns = [
-        r"(?i)rm\s+-rf\s+/",
-        r"(?i)mkfs\.",
-        r"(?i)dd\s+if=.*of=/dev/",
-        r"(?i)curl.*\|\s*bash",
-        r"(?i)wget.*\|\s*bash"
+    selected = [
+        lines[i]
+        for i in sorted(selected_indexes)
     ]
 
-    for pattern in blocked_patterns:
+    if len(selected) > MAX_LOG_LINES:
+        important = [
+            line
+            for line in selected
+            if is_important_line(line)
+        ]
 
-        if re.search(pattern, logs):
+        normal = [
+            line
+            for line in selected
+            if not is_important_line(line)
+        ]
 
-            return False
-
-    return True
-
-
-# ============================================================
-# Headers
-# ============================================================
-
-def make_headers():
-
-    return {
-        "Accept": "application/json"
-    }
-
-
-# ============================================================
-# HOME
-# ============================================================
-
-@app.route("/")
-def index():
-
-    return render_template(
-        "index.html"
-    )
-
-
-# ============================================================
-# ANALYZER PAGE
-# ============================================================
-
-@app.route("/analyze")
-def analyzer():
-
-    return render_template(
-        "analyzer.html"
-    )
-
-
-# ============================================================
-# HEALTH
-# ============================================================
-
-@app.route("/health")
-def health():
-
-    return jsonify({
-        "status": "ok",
-        "ollama_url": OLLAMA_URL,
-        "model": OLLAMA_MODEL,
-        "docker_connected": docker_client is not None
-    })
-
-
-# ============================================================
-# DOCKER
-# ============================================================
-
-@app.route("/api/containers")
-def containers():
-
-    if docker_client is None:
-
-        return jsonify({
-            "error": "Docker is not available"
-        }), 503
-
-    try:
-
-        items = []
-
-        for container in docker_client.containers.list(
-            all=True
-        ):
-
-            image = ""
-
-            try:
-                image = container.image.tags[0]
-            except Exception:
-                image = container.image.short_id
-
-            items.append({
-
-                "id": container.id,
-
-                "name": container.name,
-
-                "image": image,
-
-                "status": container.status
-            })
-
-        return jsonify(items)
-
-    except Exception as e:
-
-        logger.exception(
-            "Unable to list Docker containers"
+        remaining = max(
+            0,
+            MAX_LOG_LINES - len(important)
         )
 
-        return jsonify({
-            "error": str(e)
-        }), 500
+        if remaining > 0:
+            selected = important + normal[-remaining:]
+        else:
+            selected = important[:MAX_LOG_LINES]
+
+    result = "\n".join(selected)
+
+    if len(result) > MAX_LOG_LENGTH:
+        result = result[:MAX_LOG_LENGTH]
+
+    return result
+
+
+def detect_source(logs):
+    lower = logs.lower()
+
+    if (
+        "crashloopbackoff" in lower
+        or "kubernetes" in lower
+        or "kubectl" in lower
+        or "pod/" in lower
+    ):
+        return "Kubernetes"
+
+    if (
+        "jenkins" in lower
+        or "hudson" in lower
+        or "jenkinsfile" in lower
+    ):
+        return "Jenkins"
+
+    if (
+        "argocd" in lower
+        or "argo cd" in lower
+    ):
+        return "Argo CD"
+
+    if (
+        "github actions" in lower
+        or "actions/checkout" in lower
+    ):
+        return "GitHub Actions"
+
+    if (
+        "ansible" in lower
+        or "ansible-playbook" in lower
+    ):
+        return "Ansible"
+
+    if (
+        "docker" in lower
+        or "container" in lower
+    ):
+        return "Docker"
+
+    if (
+        "systemd" in lower
+        or "kernel:" in lower
+        or "sshd" in lower
+    ):
+        return "Linux"
+
+    return "Application"
+
+
+# =========================
+# OLLAMA AI ANALYSIS
+# =========================
+
+def analyze_with_ollama(logs, source=None):
+    if not logs:
+        return "No logs were provided for analysis."
+
+    source = source or detect_source(logs)
+
+    masked_logs = mask_sensitive_data(logs)
+
+    reduced_logs = reduce_logs(masked_logs)
+
+    statistics = get_log_statistics(masked_logs)
+
+    repeated_errors = get_repeated_errors(
+        masked_logs
+    )
+
+    if repeated_errors:
+        repeated_error_text = "\n".join(
+            [
+                f"- {item['count']}x: {item['message']}"
+                for item in repeated_errors
+            ]
+        )
+    else:
+        repeated_error_text = (
+            "No repeated errors detected."
+        )
+
+    prompt = f"""
+You are an experienced Cloud, DevOps and SRE engineer.
+
+Analyze the following {source} logs.
+
+Provide a concise production-oriented troubleshooting analysis.
+
+Use exactly these sections:
+
+1. Root Cause
+2. Evidence from Logs
+3. Impact
+4. Recommended Fix
+5. Verification Steps
+6. Prevention
+
+Rules:
+- Do not invent information.
+- Use evidence from the supplied logs.
+- If the root cause cannot be confirmed, clearly say so.
+- Give practical commands when useful.
+- Focus on production troubleshooting.
+- Keep the response concise.
+- Keep the complete response under 300 words.
+- Use plain text with a maximum of two relevant emojis.
+- Do not invent errors, services, events or causes.
+- Clearly separate evidence from assumptions.
+- Do not expose or request passwords, tokens or secret values.
+- Do not automatically execute any command.
+- Do not recommend destructive commands.
+- Never recommend chmod 666 or chmod 777.
+- State where a command should run if you include one.
+- For Docker logs, distinguish the host from the container.
+- For Kubernetes logs, distinguish the pod, node and cluster.
+- If the log shows success, do not invent a failure.
+- Focus on the first meaningful error and its consequences.
+- Do not present an unproven possible cause as the confirmed root cause.
+- Do not recommend an action already shown in the log, such as retrying.
+- Treat the calculated repeated-error list as authoritative.
+- Never claim that a warning or error repeated unless it appears in that list.
+- Describe the immediate failure separately from its underlying cause.
+- If the underlying cause is not explicitly shown, state that it is unknown.
+- Do not suggest latency, overload, resource exhaustion or network failure unless the log contains direct evidence.
+- Do not recommend scaling, adding servers or changing timeouts without supporting evidence.
+
+SOURCE:
+{source}
+
+LOG STATISTICS:
+Total lines: {statistics["total_lines"]}
+Error lines: {statistics["error_lines"]}
+Warning lines: {statistics["warning_lines"]}
+Total characters: {statistics["total_characters"]}
+
+REPEATED ERRORS:
+{repeated_error_text}
+
+RELEVANT LOGS:
+```text
+{reduced_logs}
+```
+"""
+
+    payload = {
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+        "keep_alive": "10m",
+        "options": {
+            "temperature": OLLAMA_TEMPERATURE,
+            "num_predict": OLLAMA_NUM_PREDICT
+        }
+    }
+
+    start_time = time.time()
+
+    logger.info(
+        "Sending analysis to Ollama: source=%s original=%d reduced=%d",
+        source,
+        len(logs),
+        len(reduced_logs)
+    )
+
+    try:
+        response = requests.post(
+            OLLAMA_URL,
+            json=payload,
+            timeout=OLLAMA_TIMEOUT
+        )
+
+        elapsed = time.time() - start_time
+
+        logger.info(
+            "Ollama response received: status=%s time=%.2fs",
+            response.status_code,
+            elapsed
+        )
+
+        response.raise_for_status()
+
+        data = response.json()
+
+        result = data.get(
+            "response",
+            ""
+        )
+
+        if not result:
+            return "Ollama returned an empty response."
+
+        return result.strip()
+
+    except requests.exceptions.Timeout:
+        logger.exception(
+            "Ollama request timed out"
+        )
+
+        return (
+            "AI analysis timed out.\n\n"
+            f"Model: {OLLAMA_MODEL}\n"
+            f"Timeout: {OLLAMA_TIMEOUT} seconds\n\n"
+            "Try reducing the log size or increasing "
+            "OLLAMA_TIMEOUT."
+        )
+
+    except requests.exceptions.RequestException as exc:
+        logger.exception(
+            "Ollama request failed"
+        )
+
+        return (
+            "AI analysis failed because Ollama "
+            "could not be reached.\n\n"
+            f"Error: {exc}"
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "Unexpected Ollama error"
+        )
+
+        return (
+            "AI analysis failed.\n\n"
+            f"Error: {exc}"
+        )
+
+
+# =========================
+# DOCKER
+# =========================
+
+def get_docker_client():
+    import docker
+
+    return docker.DockerClient(
+        base_url="unix://var/run/docker.sock"
+    )
 
 
 @app.route(
-    "/api/containers/<container_id>/logs"
+    "/api/containers",
+    methods=["GET"]
 )
-def container_logs(container_id):
-
-    if docker_client is None:
-
-        return jsonify({
-            "error": "Docker is not available"
-        }), 503
-
+def get_containers():
     try:
+        client = get_docker_client()
 
-        container = docker_client.containers.get(
+        containers = client.containers.list(
+            all=True
+        )
+
+        result = []
+
+        for container in containers:
+            try:
+                image = (
+                    container.image.tags[0]
+                    if container.image.tags
+                    else str(container.image.id)
+                )
+            except Exception:
+                image = "Unknown"
+
+            result.append(
+                {
+                    "id": container.id,
+                    "short_id": container.short_id,
+                    "name": container.name,
+                    "status": container.status,
+                    "image": image
+                }
+            )
+
+        return jsonify(result)
+
+    except Exception as exc:
+        logger.exception(
+            "Docker containers request failed"
+        )
+
+        return jsonify(
+            {
+                "error": str(exc)
+            }
+        ), 500
+
+
+@app.route(
+    "/api/containers/<container_id>/logs",
+    methods=["GET"]
+)
+def get_container_logs(container_id):
+    try:
+        client = get_docker_client()
+
+        container = client.containers.get(
             container_id
         )
 
         logs = container.logs(
             stdout=True,
             stderr=True,
-            tail=5000
-        ).decode(
-            "utf-8",
-            errors="replace"
+            tail=1000,
+            timestamps=True
         )
 
-        logs = mask_sensitive_data(logs)
+        if isinstance(logs, bytes):
+            logs = logs.decode(
+                "utf-8",
+                errors="replace"
+            )
 
-        logs = logs[-MAX_LOG_LENGTH:]
+        return jsonify(
+            {
+                "logs": logs
+            }
+        )
 
-        return jsonify({
+    except Exception as exc:
+        logger.exception(
+            "Docker logs request failed"
+        )
 
-            "source": "docker",
-
-            "container": container.name,
-
-            "logs": logs
-
-        })
-
-    except Exception as e:
-
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify(
+            {
+                "error": str(exc),
+                "logs": ""
+            }
+        ), 500
 
 
-# ============================================================
+# =========================
 # JENKINS
-# ============================================================
+# =========================
 
-def jenkins_auth():
+def jenkins_request(
+    path,
+    params=None
+):
+    if not JENKINS_URL:
+        raise RuntimeError(
+            "JENKINS_URL is not configured."
+        )
 
-    if not JENKINS_USER or not JENKINS_TOKEN:
-
-        return None
-
-    return (
-        JENKINS_USER,
-        JENKINS_TOKEN
+    url = (
+        JENKINS_URL
+        + "/"
+        + path.lstrip("/")
     )
 
+    auth = None
 
-@app.route("/api/jenkins/status")
-def jenkins_status():
-
-    if not JENKINS_URL:
-
-        return jsonify({
-            "configured": False
-        })
-
-    try:
-
-        response = requests.get(
-            f"{JENKINS_URL}/api/json",
-            auth=jenkins_auth(),
-            timeout=10
+    if JENKINS_USER and JENKINS_TOKEN:
+        auth = (
+            JENKINS_USER,
+            JENKINS_TOKEN
         )
 
-        response.raise_for_status()
+    response = requests.get(
+        url,
+        auth=auth,
+        params=params,
+        timeout=30
+    )
 
-        return jsonify({
-            "configured": True,
-            "online": True
-        })
+    response.raise_for_status()
 
-    except Exception as e:
-
-        return jsonify({
-            "configured": True,
-            "online": False,
-            "error": str(e)
-        })
+    return response
 
 
-@app.route("/api/jenkins/jobs")
+@app.route(
+    "/api/jenkins/jobs",
+    methods=["GET"]
+)
 def jenkins_jobs():
-
-    if not JENKINS_URL:
-
-        return jsonify({
-            "error": "Jenkins is not configured"
-        }), 503
-
     try:
-
-        response = requests.get(
-            f"{JENKINS_URL}/api/json",
+        response = jenkins_request(
+            "/api/json",
             params={
                 "tree": (
                     "jobs[name,url,color,"
-                    "lastBuild[number,result,"
-                    "timestamp,duration]]"
-                )
-            },
-            auth=jenkins_auth(),
-            timeout=15
-        )
-
-        response.raise_for_status()
-
-        return jsonify(
-            response.json()
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Unable to retrieve Jenkins jobs"
-        )
-
-        return jsonify({
-            "error": str(e)
-        }), 500
-
-
-@app.route(
-    "/api/jenkins/jobs/<path:job_name>/builds"
-)
-def jenkins_builds(job_name):
-
-    if not JENKINS_URL:
-
-        return jsonify({
-            "error": "Jenkins is not configured"
-        }), 503
-
-    try:
-
-        url = (
-            f"{JENKINS_URL}/job/"
-            f"{job_name}/api/json"
-        )
-
-        response = requests.get(
-            url,
-            params={
-                "tree": (
                     "builds[number,result,"
-                    "timestamp,duration,url]"
+                    "timestamp,duration,url]]"
                 )
-            },
-            auth=jenkins_auth(),
-            timeout=15
+            }
         )
 
-        response.raise_for_status()
+        data = response.json()
 
         return jsonify(
-            response.json()
+            {
+                "jobs": data.get(
+                    "jobs",
+                    []
+                )
+            }
         )
 
-    except Exception as e:
+    except Exception as exc:
+        logger.exception(
+            "Jenkins jobs request failed"
+        )
 
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify(
+            {
+                "error": str(exc),
+                "jobs": []
+            }
+        ), 500
 
 
 @app.route(
-    "/api/jenkins/jobs/<path:job_name>/"
-    "builds/<int:build_number>/logs"
+    "/api/jenkins/jobs/<path:job_name>/builds/<int:build_number>/logs",
+    methods=["GET"]
 )
 def jenkins_build_logs(
     job_name,
     build_number
 ):
-
-    if not JENKINS_URL:
-
-        return jsonify({
-            "error": "Jenkins is not configured"
-        }), 503
-
     try:
-
-        url = (
-            f"{JENKINS_URL}/job/"
-            f"{job_name}/{build_number}/consoleText"
+        response = jenkins_request(
+            f"/job/{job_name}/{build_number}/consoleText"
         )
 
-        response = requests.get(
-            url,
-            auth=jenkins_auth(),
-            timeout=30
+        return jsonify(
+            {
+                "logs": response.text
+            }
         )
 
-        response.raise_for_status()
+    except Exception as exc:
+        logger.exception(
+            "Jenkins console log request failed"
+        )
 
-        logs = response.text
-
-        logs = mask_sensitive_data(logs)
-
-        logs = logs[-MAX_LOG_LENGTH:]
-
-        return jsonify({
-
-            "source": "jenkins",
-
-            "job": job_name,
-
-            "build": build_number,
-
-            "logs": logs
-
-        })
-
-    except Exception as e:
-
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify(
+            {
+                "error": str(exc),
+                "logs": ""
+            }
+        ), 500
 
 
-# ============================================================
+# =========================
 # ARGO CD
-# ============================================================
+# =========================
 
 def argocd_headers():
-
-    return {
-        "Authorization": f"Bearer {ARGOCD_TOKEN}",
+    headers = {
         "Accept": "application/json"
     }
 
+    if ARGOCD_TOKEN:
+        headers["Authorization"] = (
+            f"Bearer {ARGOCD_TOKEN}"
+        )
 
-@app.route("/api/argocd/status")
-def argocd_status():
+    return headers
 
+
+def argocd_request(
+    path,
+    params=None
+):
     if not ARGOCD_URL:
-
-        return jsonify({
-            "configured": False
-        })
-
-    try:
-
-        response = requests.get(
-            f"{ARGOCD_URL}/api/version",
-            headers=argocd_headers(),
-            timeout=10,
-            verify=False
+        raise RuntimeError(
+            "ARGOCD_URL is not configured."
         )
 
-        return jsonify({
+    url = (
+        ARGOCD_URL
+        + "/"
+        + path.lstrip("/")
+    )
 
-            "configured": True,
+    response = requests.get(
+        url,
+        headers=argocd_headers(),
+        params=params,
+        timeout=30,
+        verify=False
+    )
 
-            "online": response.ok,
+    response.raise_for_status()
 
-            "status_code": response.status_code
-
-        })
-
-    except Exception as e:
-
-        return jsonify({
-
-            "configured": True,
-
-            "online": False,
-
-            "error": str(e)
-
-        })
-
-
-@app.route("/api/argocd/applications")
-def argocd_applications():
-
-    if not ARGOCD_URL:
-
-        return jsonify({
-            "error": "Argo CD is not configured"
-        }), 503
-
-    try:
-
-        response = requests.get(
-
-            f"{ARGOCD_URL}/api/v1/applications",
-
-            headers=argocd_headers(),
-
-            timeout=20,
-
-            verify=False
-
-        )
-
-        response.raise_for_status()
-
-        return jsonify(
-            response.json()
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Unable to retrieve Argo CD applications"
-        )
-
-        return jsonify({
-            "error": str(e)
-        }), 500
+    return response
 
 
 @app.route(
-    "/api/argocd/applications/<path:name>"
+    "/api/argocd/applications",
+    methods=["GET"]
 )
-def argocd_application(name):
-
-    if not ARGOCD_URL:
-
-        return jsonify({
-            "error": "Argo CD is not configured"
-        }), 503
-
+def argocd_applications():
     try:
-
-        response = requests.get(
-
-            f"{ARGOCD_URL}/api/v1/applications/{name}",
-
-            headers=argocd_headers(),
-
-            timeout=20,
-
-            verify=False
-
+        response = argocd_request(
+            "/api/v1/applications"
         )
 
-        response.raise_for_status()
+        data = response.json()
+
+        return jsonify(data)
+
+    except Exception as exc:
+        logger.exception(
+            "Argo CD applications request failed"
+        )
+
+        return jsonify(
+            {
+                "error": str(exc),
+                "items": []
+            }
+        ), 500
+
+
+@app.route(
+    "/api/argocd/applications/<path:app_name>",
+    methods=["GET"]
+)
+def argocd_application(
+    app_name
+):
+    try:
+        response = argocd_request(
+            f"/api/v1/applications/{app_name}"
+        )
 
         return jsonify(
             response.json()
         )
 
-    except Exception as e:
+    except Exception as exc:
+        logger.exception(
+            "Argo CD application request failed"
+        )
 
-        return jsonify({
-            "error": str(e)
-        }), 500
+        return jsonify(
+            {
+                "error": str(exc)
+            }
+        ), 500
 
 
-# ============================================================
-# GITHUB
-# ============================================================
+# =========================
+# GITHUB ACTIONS
+# =========================
 
 def github_headers():
-
-    return {
-
-        "Authorization":
-            f"Bearer {GITHUB_TOKEN}",
-
-        "Accept":
-            "application/vnd.github+json",
-
-        "X-GitHub-Api-Version":
+    headers = {
+        "Accept": (
+            "application/vnd.github+json"
+        ),
+        "X-GitHub-Api-Version": (
             "2022-11-28"
+        )
     }
 
-
-@app.route("/api/github/status")
-def github_status():
-
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-
-        return jsonify({
-
-            "configured": False
-
-        })
-
-    try:
-
-        response = requests.get(
-
-            f"{GITHUB_API_URL}/repos/"
-            f"{GITHUB_REPO}",
-
-            headers=github_headers(),
-
-            timeout=15
-
+    if GITHUB_TOKEN:
+        headers["Authorization"] = (
+            f"Bearer {GITHUB_TOKEN}"
         )
 
-        return jsonify({
-
-            "configured": True,
-
-            "online": response.ok,
-
-            "status_code":
-                response.status_code
-
-        })
-
-    except Exception as e:
-
-        return jsonify({
-
-            "configured": True,
-
-            "online": False,
-
-            "error": str(e)
-
-        })
+    return headers
 
 
-@app.route("/api/github/runs")
-def github_runs():
+def github_request(
+    path,
+    params=None
+):
+    url = (
+        GITHUB_API
+        + "/"
+        + path.lstrip("/")
+    )
 
-    if not GITHUB_TOKEN or not GITHUB_REPO:
+    response = requests.get(
+        url,
+        headers=github_headers(),
+        params=params,
+        timeout=30
+    )
 
-        return jsonify({
+    response.raise_for_status()
 
-            "error":
-                "GitHub is not configured"
-
-        }), 503
-
-    try:
-
-        url = (
-
-            f"{GITHUB_API_URL}/repos/"
-            f"{GITHUB_REPO}/actions/runs"
-
-        )
-
-        response = requests.get(
-
-            url,
-
-            headers=github_headers(),
-
-            params={
-                "per_page": 20
-            },
-
-            timeout=20
-
-        )
-
-        response.raise_for_status()
-
-        return jsonify(
-            response.json()
-        )
-
-    except Exception as e:
-
-        logger.exception(
-            "Unable to retrieve GitHub workflow runs"
-        )
-
-        return jsonify({
-
-            "error": str(e)
-
-        }), 500
+    return response
 
 
-# ============================================================
-# GITHUB ACTIONS LOGS
-# ============================================================
+def list_github_repos():
+    """Return every repo GITHUB_OWNER has, across public and private,
+    using the token if one is set so private repos are included too."""
+    repos = []
+    seen_full_names = set()
+
+    if GITHUB_TOKEN:
+        url = f"{GITHUB_API}/user/repos"
+        params = {
+            "per_page": 100,
+            "affiliation": "owner,organization_member,collaborator",
+            "sort": "full_name"
+        }
+
+        while url:
+            response = requests.get(
+                url,
+                headers=github_headers(),
+                params=params,
+                timeout=30
+            )
+            response.raise_for_status()
+
+            for repo in response.json():
+                owner_login = (
+                    (repo.get("owner") or {}).get("login", "")
+                )
+
+                if owner_login.lower() != GITHUB_OWNER.lower():
+                    continue
+
+                full_name = repo.get("full_name")
+
+                if full_name in seen_full_names:
+                    continue
+
+                seen_full_names.add(full_name)
+
+                repos.append(
+                    {
+                        "name": repo.get("name"),
+                        "full_name": full_name,
+                        "private": repo.get("private", False),
+                        "updated_at": repo.get("updated_at")
+                    }
+                )
+
+            url = response.links.get("next", {}).get("url")
+            params = None
+
+    if not repos:
+        # No token, or the token can't see this owner's repos:
+        # fall back to whatever is public.
+        for endpoint in (
+            f"/users/{GITHUB_OWNER}/repos",
+            f"/orgs/{GITHUB_OWNER}/repos"
+        ):
+            try:
+                response = github_request(
+                    endpoint,
+                    params={
+                        "per_page": 100,
+                        "sort": "full_name"
+                    }
+                )
+
+                for repo in response.json():
+                    repos.append(
+                        {
+                            "name": repo.get("name"),
+                            "full_name": repo.get("full_name"),
+                            "private": repo.get("private", False),
+                            "updated_at": repo.get("updated_at")
+                        }
+                    )
+
+                break
+
+            except requests.exceptions.RequestException:
+                continue
+
+    repos.sort(key=lambda r: (r.get("name") or "").lower())
+
+    return repos
+
 
 @app.route(
-    "/api/github/runs/<int:run_id>/logs"
+    "/api/github/repos",
+    methods=["GET"]
 )
-def github_run_logs(run_id):
-
-    if not GITHUB_TOKEN or not GITHUB_REPO:
-
-        return jsonify({
-
-            "error":
-                "GitHub is not configured"
-
-        }), 503
-
+def github_repos():
     try:
+        if not GITHUB_OWNER:
+            raise RuntimeError(
+                "GITHUB_OWNER is not configured."
+            )
 
-        url = (
+        repos = list_github_repos()
 
-            f"{GITHUB_API_URL}/repos/"
-            f"{GITHUB_REPO}/actions/runs/"
-            f"{run_id}/logs"
-
+        return jsonify(
+            {
+                "repos": repos
+            }
         )
 
-        logger.info(
-            "Downloading GitHub Actions logs "
-            "for run %s",
-            run_id
+    except Exception as exc:
+        logger.exception(
+            "GitHub repos request failed"
+        )
+
+        return jsonify(
+            {
+                "error": str(exc),
+                "repos": []
+            }
+        ), 500
+
+
+@app.route(
+    "/api/github/runs",
+    methods=["GET"]
+)
+def github_runs():
+    try:
+        if not GITHUB_OWNER:
+            raise RuntimeError(
+                "GITHUB_OWNER is not configured."
+            )
+
+        repo = request.args.get("repo") or GITHUB_REPO
+
+        if not repo:
+            raise RuntimeError(
+                "No repository specified. Pass ?repo=<name> "
+                "or set GITHUB_REPO as a default."
+            )
+
+        response = github_request(
+            f"/repos/{GITHUB_OWNER}/{repo}/actions/runs",
+            params={
+                "per_page": 20
+            }
+        )
+
+        data = response.json()
+
+        return jsonify(data)
+
+    except Exception as exc:
+        logger.exception(
+            "GitHub Actions runs request failed"
+        )
+
+        return jsonify(
+            {
+                "error": str(exc),
+                "workflow_runs": []
+            }
+        ), 500
+
+
+@app.route(
+    "/api/github/runs/<int:run_id>/logs",
+    methods=["GET"]
+)
+def github_run_logs(run_id):
+    try:
+        if not GITHUB_OWNER:
+            raise RuntimeError(
+                "GITHUB_OWNER is not configured."
+            )
+
+        repo = request.args.get("repo") or GITHUB_REPO
+
+        if not repo:
+            raise RuntimeError(
+                "No repository specified. Pass ?repo=<name> "
+                "or set GITHUB_REPO as a default."
+            )
+
+        url = (
+            f"{GITHUB_API}/repos/"
+            f"{GITHUB_OWNER}/"
+            f"{repo}/"
+            f"actions/runs/"
+            f"{run_id}/logs"
         )
 
         response = requests.get(
-
             url,
-
             headers=github_headers(),
-
-            timeout=60
-
+            timeout=30
         )
 
         response.raise_for_status()
@@ -1005,20 +1216,21 @@ def github_run_logs(run_id):
             response.content
         )
 
-        extracted_logs = []
+        logs = []
 
         with zipfile.ZipFile(
-            zip_data,
-            "r"
+            zip_data
         ) as archive:
 
             for filename in archive.namelist():
-
                 if filename.endswith("/"):
                     continue
 
-                try:
+                logs.append(
+                    f"\n===== {filename} =====\n"
+                )
 
+                try:
                     content = archive.read(
                         filename
                     ).decode(
@@ -1026,347 +1238,212 @@ def github_run_logs(run_id):
                         errors="replace"
                     )
 
-                    extracted_logs.append(
+                    logs.append(content)
 
-                        "\n"
-                        + "=" * 80
-                        + "\n"
-                        + f"FILE: {filename}\n"
-                        + "=" * 80
-                        + "\n"
-                        + content
-
+                except Exception as exc:
+                    logs.append(
+                        f"Unable to read log: {exc}"
                     )
 
-                except Exception as file_error:
-
-                    logger.warning(
-
-                        "Could not read "
-                        "GitHub log %s: %s",
-
-                        filename,
-
-                        file_error
-
-                    )
-
-        logs = "\n".join(
-            extracted_logs
+        return jsonify(
+            {
+                "logs": "\n".join(logs)
+            }
         )
 
-        logs = mask_sensitive_data(
-            logs
-        )
-
-        logs = logs[-MAX_LOG_LENGTH:]
-
-        if not logs.strip():
-
-            return jsonify({
-
-                "error":
-                    "GitHub returned an empty "
-                    "workflow log archive."
-
-            }), 404
-
-        return jsonify({
-
-            "source":
-                "github-actions",
-
-            "run_id":
-                run_id,
-
-            "logs":
-                logs
-
-        })
-
-    except zipfile.BadZipFile:
-
-        return jsonify({
-
-            "error":
-                "GitHub returned logs, "
-                "but the response was not "
-                "a valid ZIP archive."
-
-        }), 500
-
-    except requests.HTTPError as e:
-
-        status_code = (
-
-            e.response.status_code
-
-            if e.response is not None
-
-            else 500
-
-        )
-
-        if status_code == 404:
-
-            return jsonify({
-
-                "error":
-                    "Workflow logs are not available. "
-                    "The run may still be running, "
-                    "or the logs may have expired."
-
-            }), 404
-
-        return jsonify({
-
-            "error": str(e)
-
-        }), status_code
-
-    except Exception as e:
-
+    except Exception as exc:
         logger.exception(
-
-            "Unable to retrieve GitHub Actions logs"
-
+            "GitHub Actions logs request failed"
         )
 
-        return jsonify({
+        return jsonify(
+            {
+                "error": str(exc),
+                "logs": ""
+            }
+        ), 500
 
-            "error": str(e)
 
-        }), 500
+# =========================
+# ANALYZER PAGE
+# =========================
 
-
-# ============================================================
-# GENERIC AI ANALYSIS
-# ============================================================
-
-@app.route("/api/analyze", methods=["POST"])
-def analyze():
-
-    data = request.get_json(
-        silent=True
-    ) or {}
-
-    logs = data.get(
-        "logs",
-        ""
+@app.route(
+    "/analyze",
+    methods=["GET"]
+)
+def analyzer_page():
+    return render_template(
+        "analyzer.html"
     )
 
-    source = data.get(
-        "source",
-        "auto"
-    )
 
-    if not logs.strip():
+# =========================
+# AI ANALYZE API
+# =========================
 
-        return jsonify({
-
-            "error":
-                "No logs provided"
-
-        }), 400
-
-    if source not in SUPPORTED_LOG_TYPES:
-
-        source = "auto"
-
-    logs = logs[:MAX_LOG_LENGTH]
-
-    logs = mask_sensitive_data(
-        logs
-    )
-
-    if not safety_check(logs):
-
-        return jsonify({
-
-            "error":
-                "Potentially destructive "
-                "command detected in logs. "
-                "Analysis blocked."
-
-        }), 400
-
-    detected_source = detect_log_source(
-        logs
-    )
-
-    if source == "auto":
-
-        source = detected_source
-
-    statistics = get_statistics(
-        logs
-    )
-
-    repeated_errors = find_repeated_errors(
-        logs
-    )
-
-    repeated_text = "\n".join(
-
-        f"- {line} "
-        f"(count: {count})"
-
-        for line, count in repeated_errors
-
-    )
-
-    prompt = f"""
-You are an experienced Cloud and DevOps
-production troubleshooting assistant.
-
-Analyze ONLY the supplied logs.
-
-Do not invent information.
-
-Do not assume infrastructure that is not
-visible in the logs.
-
-LOG SOURCE:
-{source}
-
-DETECTED SOURCE:
-{detected_source}
-
-LOG STATISTICS:
-{statistics}
-
-REPEATED ERRORS:
-{repeated_text}
-
-LOGS:
---------------------
-{logs}
---------------------
-
-Provide the analysis using exactly these sections:
-
-1. Summary
-2. Severity
-3. Evidence
-4. Root Cause
-5. Impact
-6. Troubleshooting Steps
-7. Recommended Fix
-8. Prevention
-9. Useful Commands
-
-Rules:
-
-- Every important conclusion must be supported
-  by evidence in the logs.
-- If the root cause cannot be confirmed,
-  clearly say that it cannot be confirmed.
-- Separate confirmed evidence from likely causes.
-- Do not invent pod names, EC2 IDs, IP addresses,
-  error codes, database names, or infrastructure.
-- Commands must be relevant to the observed issue.
-- Do not recommend destructive commands unless
-  clearly required and explain their impact.
-"""
-
+@app.route(
+    "/api/analyze",
+    methods=["POST"]
+)
+def analyze_logs():
     try:
+        data = request.get_json(
+            silent=True
+        ) or {}
 
-        response = requests.post(
-
-            OLLAMA_URL,
-
-            json={
-
-                "model":
-                    OLLAMA_MODEL,
-
-                "prompt":
-                    prompt,
-
-                "stream":
-                    False
-
-            },
-
-            timeout=180
-
+        source = data.get(
+            "source",
+            "unknown"
         )
 
-        response.raise_for_status()
-
-        result = response.json()
-
-        analysis = result.get(
-            "response",
+        logs = data.get(
+            "logs",
             ""
         )
 
-        if not analysis:
-
-            analysis = (
-                "Ollama returned an empty response."
+        if isinstance(
+            logs,
+            dict
+        ):
+            logs = json.dumps(
+                logs,
+                indent=2
             )
 
-        return jsonify({
+        elif not isinstance(
+            logs,
+            str
+        ):
+            logs = str(logs)
 
-            "source":
-                source,
+        if not logs.strip():
+            return jsonify(
+                {
+                    "error": "No logs provided."
+                }
+            ), 400
 
-            "detected_source":
-                detected_source,
-
-            "statistics":
-                statistics,
-
-            "analysis":
-                analysis
-
-        })
-
-    except requests.RequestException as e:
-
-        logger.exception(
-            "Ollama request failed"
+        logger.info(
+            "AI analysis requested: source=%s chars=%d",
+            source,
+            len(logs)
         )
 
-        return jsonify({
+        start_time = time.time()
 
-            "error":
-                f"Ollama request failed: {e}"
-
-        }), 502
-
-    except Exception as e:
-
-        logger.exception(
-            "Analysis failed"
+        analysis = analyze_with_ollama(
+            logs,
+            source
         )
 
-        return jsonify({
+        elapsed = time.time() - start_time
 
-            "error":
-                str(e)
+        logger.info(
+            "AI analysis completed in %.2fs",
+            elapsed
+        )
 
-        }), 500
+        return jsonify(
+            {
+                "analysis": analysis
+            }
+        )
+
+    except Exception as exc:
+        logger.exception(
+            "AI analyze endpoint failed"
+        )
+
+        return jsonify(
+            {
+                "error": str(exc)
+            }
+        ), 500
 
 
-# ============================================================
-# MAIN
-# ============================================================
+# =========================
+# HEALTH CHECK
+# =========================
+
+@app.route(
+    "/health",
+    methods=["GET"]
+)
+def health():
+    return jsonify(
+        {
+            "status": "healthy",
+            "service": "ai-log-analyzer",
+            "ollama_url": OLLAMA_URL,
+            "ollama_model": OLLAMA_MODEL,
+            "docker": True,
+            "jenkins": bool(JENKINS_URL),
+            "argocd": bool(ARGOCD_URL),
+            "github": bool(GITHUB_OWNER)
+        }
+    )
+
+
+# =========================
+# HOME PAGE
+# =========================
+
+@app.route(
+    "/",
+    methods=["GET"]
+)
+def index():
+    return render_template(
+        "index.html"
+    )
+
+
+# =========================
+# START APPLICATION
+# =========================
 
 if __name__ == "__main__":
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "Starting AI Log Analyzer"
+    )
+
+    logger.info(
+        "Ollama URL: %s",
+        OLLAMA_URL
+    )
+
+    logger.info(
+        "Ollama Model: %s",
+        OLLAMA_MODEL
+    )
+
+    logger.info(
+        "GitHub: %s/%s",
+        GITHUB_OWNER or "NOT_CONFIGURED",
+        GITHUB_REPO or "NOT_CONFIGURED"
+    )
+
+    logger.info(
+        "Jenkins configured: %s",
+        bool(JENKINS_URL)
+    )
+
+    logger.info(
+        "Argo CD configured: %s",
+        bool(ARGOCD_URL)
+    )
+
+    logger.info(
+        "========================================"
+    )
 
     app.run(
-
         host="0.0.0.0",
-
-        port=int(
-            os.getenv(
-                "PORT",
-                "5000"
-            )
-        ),
-
+        port=5000,
         debug=False
-
     )

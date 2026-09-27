@@ -241,6 +241,13 @@
 
         </select>
 
+        <span id="repoSelectWrap" style="display:none;">
+            <select id="repoSelect"
+                    onchange="loadGitHub()">
+                <option value="">Loading repos...</option>
+            </select>
+        </span>
+
         <button class="secondary"
                 onclick="loadSource()">
             Refresh
@@ -307,6 +314,97 @@ function showError(message) {
 }
 
 
+let reposLoaded = false;
+
+
+function currentRepo() {
+
+    return document.getElementById(
+        "repoSelect"
+    ).value;
+
+}
+
+
+async function ensureRepoListLoaded() {
+
+    if (reposLoaded) {
+
+        return;
+
+    }
+
+    const repoSelect =
+        document.getElementById(
+            "repoSelect"
+        );
+
+    repoSelect.innerHTML = `
+        <option value="">
+            Loading repos...
+        </option>
+    `;
+
+    try {
+
+        const response =
+            await fetch(
+                "/api/github/repos"
+            );
+
+        const data =
+            await response.json();
+
+        if (!response.ok) {
+
+            throw new Error(
+                data.error ||
+                "Unable to load repositories"
+            );
+
+        }
+
+        const repos =
+            data.repos || [];
+
+        if (!repos.length) {
+
+            repoSelect.innerHTML = `
+                <option value="">
+                    No repositories found
+                </option>
+            `;
+
+            return;
+
+        }
+
+        repoSelect.innerHTML =
+            repos.map(r => `
+                <option value="${escapeHtml(r.name)}">
+                    ${escapeHtml(r.full_name || r.name)}
+                </option>
+            `).join("");
+
+        reposLoaded = true;
+
+    }
+
+    catch (error) {
+
+        showError(error.message);
+
+        repoSelect.innerHTML = `
+            <option value="">
+                Failed to load repos
+            </option>
+        `;
+
+    }
+
+}
+
+
 async function loadSource() {
 
     clearError();
@@ -315,6 +413,13 @@ async function loadSource() {
         document.getElementById(
             "sourceSelect"
         ).value;
+
+    document.getElementById(
+        "repoSelectWrap"
+    ).style.display =
+        (source === "github")
+            ? "inline-block"
+            : "none";
 
     if (source === "docker") {
 
@@ -335,6 +440,8 @@ async function loadSource() {
     }
 
     else if (source === "github") {
+
+        await ensureRepoListLoaded();
 
         await loadGitHub();
 
@@ -901,6 +1008,20 @@ function analyzeArgoCD(name) {
 
 async function loadGitHub() {
 
+    const repo = currentRepo();
+
+    if (!repo) {
+
+        content.innerHTML = `
+            <div class="empty">
+                Select a repository above.
+            </div>
+        `;
+
+        return;
+
+    }
+
     content.innerHTML = `
         <div class="loading">
             Loading GitHub Actions runs...
@@ -911,7 +1032,7 @@ async function loadGitHub() {
 
         const response =
             await fetch(
-                "/api/github/runs"
+                `/api/github/runs?repo=${encodeURIComponent(repo)}`
             );
 
         const data =
@@ -1098,9 +1219,12 @@ async function viewGitHubLogs(
 
     try {
 
+        const repo = currentRepo();
+
         const response =
             await fetch(
-                `/api/github/runs/${runId}/logs`
+                `/api/github/runs/${runId}/logs` +
+                `?repo=${encodeURIComponent(repo)}`
             );
 
         const data =
@@ -1172,9 +1296,12 @@ async function viewGitHubLogs(
 
 function analyzeGitHub(runId) {
 
+    const repo = currentRepo();
+
     window.location.href =
         `/analyze?source=github-actions` +
-        `&run=${runId}`;
+        `&run=${runId}` +
+        `&repo=${encodeURIComponent(repo)}`;
 
 }
 

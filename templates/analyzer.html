@@ -229,6 +229,9 @@ const build =
 const appName =
     params.get("app");
 
+const repo =
+    params.get("repo");
+
 
 const logsTextarea =
     document.getElementById(
@@ -348,7 +351,10 @@ async function loadLogs() {
 
             url =
                 `/api/github/runs/` +
-                `${runId}/logs`;
+                `${runId}/logs` +
+                (repo
+                    ? `?repo=${encodeURIComponent(repo)}`
+                    : "");
 
         }
 

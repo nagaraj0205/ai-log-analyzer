@@ -14,4 +14,6 @@ COPY . .
 
 EXPOSE 5000
 
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "app:app"]
+# --timeout must stay >= OLLAMA_TIMEOUT (see .env), or gunicorn will
+# kill the worker before a slow Ollama response comes back.
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--workers", "2", "--threads", "4", "--timeout", "300", "app:app"]

@@ -1,5 +1,9 @@
 services:
 
+  # ============================================================
+  # AI LOG ANALYZER
+  # ============================================================
+
   ai-log-analyzer:
 
     build: .
@@ -9,37 +13,80 @@ services:
     ports:
       - "5001:5000"
 
+    env_file:
+      - .env
+
     environment:
 
-      OLLAMA_URL: http://ollama:11434/api/generate
+      # ----------------------------------------------------------
+      # Ollama
+      # ----------------------------------------------------------
 
-      OLLAMA_MODEL: qwen2.5-coder:3b
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434/api/generate}
 
-      MAX_LOG_LENGTH: 12000
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen2.5-coder:3b}
+
+      OLLAMA_TEMPERATURE: ${OLLAMA_TEMPERATURE:-0.2}
+
+      OLLAMA_NUM_PREDICT: ${OLLAMA_NUM_PREDICT:-700}
+
+      OLLAMA_TIMEOUT: ${OLLAMA_TIMEOUT:-300}
+
+
+      # ----------------------------------------------------------
+      # Log Limits
+      # ----------------------------------------------------------
+
+      MAX_LOG_LINES: ${MAX_LOG_LINES:-600}
+
+      MAX_LOG_LENGTH: ${MAX_LOG_LENGTH:-6000}
+
+
+      # ----------------------------------------------------------
+      # Jenkins
+      # ----------------------------------------------------------
+
+      JENKINS_URL: ${JENKINS_URL:-}
+
+      JENKINS_USER: ${JENKINS_USER:-}
+
+      JENKINS_TOKEN: ${JENKINS_TOKEN:-}
+
+
+      # ----------------------------------------------------------
+      # Argo CD
+      # ----------------------------------------------------------
+
+      ARGOCD_URL: ${ARGOCD_URL:-}
+
+      ARGOCD_TOKEN: ${ARGOCD_TOKEN:-}
+
+
+      # ----------------------------------------------------------
+      # GitHub
+      # ----------------------------------------------------------
+
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+
+      GITHUB_REPO: ${GITHUB_REPO:-}
+
+      GITHUB_API_URL: ${GITHUB_API_URL:-https://api.github.com}
+
+
+      # ----------------------------------------------------------
+      # Flask
+      # ----------------------------------------------------------
 
       PORT: 5000
 
-      # Jenkins
-      JENKINS_URL: ${JENKINS_URL:-}
-      JENKINS_USER: ${JENKINS_USER:-}
-      JENKINS_TOKEN: ${JENKINS_TOKEN:-}
-
-      # Argo CD
-      ARGOCD_URL: ${ARGOCD_URL:-}
-      ARGOCD_TOKEN: ${ARGOCD_TOKEN:-}
-
-      # GitHub
-      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
-      GITHUB_REPO: ${GITHUB_REPO:-}
-
-      GITHUB_API_URL: https://api.github.com
-
     volumes:
 
+      # Allow the application to read Docker container information
       - /var/run/docker.sock:/var/run/docker.sock
 
     group_add:
 
+      # Docker socket group
       - "1001"
 
     depends_on:
@@ -48,6 +95,10 @@ services:
 
     restart: unless-stopped
 
+
+  # ============================================================
+  # OLLAMA
+  # ============================================================
 
   ollama:
 
@@ -65,6 +116,10 @@ services:
 
     restart: unless-stopped
 
+
+# ==============================================================
+# VOLUMES
+# ==============================================================
 
 volumes:
 
